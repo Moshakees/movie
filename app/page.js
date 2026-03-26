@@ -1,8 +1,11 @@
 import Navbar from '@/components/Navbar';
 import MovieCard from '@/components/MovieCard';
+import HeroSlider from '@/components/HeroSlider';
 import { fetchTrending, fetchTopRated, fetchFeatured, fetchByGenre } from '@/lib/api';
 import { Play, Info, ChevronLeft, Star } from 'lucide-react';
 import Link from 'next/link';
+
+export const revalidate = 3600; // Cache the homepage for 1 hour (ISR) - essential to prevent proxy bans!
 
 // Helper: encode URL for obfuscation
 function encodeMovieUrl(url) {
@@ -39,93 +42,80 @@ async function MovieRow({ title, slug, movies }) {
     );
 }
 
+// Delay helper to prevent hitting rate limits on the CORS proxy
+const delay = (ms) => new Promise(res => setTimeout(res, ms));
+
+async function fetchInChunksWithDelay(tasks, chunkSize = 3, delayMs = 600) {
+    const results = [];
+    for (let i = 0; i < tasks.length; i += chunkSize) {
+        const chunk = tasks.slice(i, i + chunkSize);
+        const resolvedChunk = await Promise.allSettled(chunk.map(fn => fn()));
+        results.push(...resolvedChunk);
+        if (i + chunkSize < tasks.length) await delay(delayMs);
+    }
+    return results;
+}
+
 export default async function Home() {
-    // Fetch all data in parallel
-    const [featured, trending, topRated] = await Promise.allSettled([
-        fetchFeatured(),
-        fetchTrending(),
-        fetchTopRated(),
-    ]);
+    // 1. Fetch core sections sequentially to avoid triggering 429 Too Many Requests
+    const [featured, trending, topRated] = await fetchInChunksWithDelay([
+        () => fetchFeatured(),
+        () => fetchTrending(),
+        () => fetchTopRated()
+    ], 3, 500);
 
     const featuredMovies = featured.status === 'fulfilled' ? featured.value || [] : [];
     const trendingMovies = trending.status === 'fulfilled' ? trending.value || [] : [];
     const topRatedSeries = topRated.status === 'fulfilled' ? topRated.value || [] : [];
 
-    // Fetch category rows in parallel (limit to avoid slow loads)
-    const [
-        netflixMovies, foreignMovies, actionMovies, horrorMovies,
-        hindiMovies, asiaMovies, turkiSeries, arabicSeries,
-        foreignSeries, asiaSeries, koreanSeries, anmi
-    ] = await Promise.allSettled([
-        fetchByGenre('netflix-movies'), fetchByGenre('foreign-movies'),
-        fetchByGenre('action-movies'), fetchByGenre('horror-movies'),
-        fetchByGenre('hindi-movies'), fetchByGenre('asia-movies'),
-        fetchByGenre('turki'), fetchByGenre('arabic'),
-        fetchByGenre('Foreign-series'), fetchByGenre('asia-series'),
-        fetchByGenre('korean-series'), fetchByGenre('anmi'),
-    ]);
+    // 2. Fetch category rows sequentially in small batches
+    const genreTasks = [
+        () => fetchByGenre('netflix-movies'), () => fetchByGenre('foreign-movies'),
+        () => fetchByGenre('action-movies'), () => fetchByGenre('horror-movies'),
+        () => fetchByGenre('hindi-movies'), () => fetchByGenre('asia-movies'),
+        () => fetchByGenre('turki'), () => fetchByGenre('arabic'),
+        () => fetchByGenre('Foreign-series'), () => fetchByGenre('asia-series'),
+        () => fetchByGenre('korean-series'), () => fetchByGenre('anmi')
+    ];
 
-    const get = (r) => r.status === 'fulfilled' ? r.value || [] : [];
-
-    // Hero movie: prefer from featured, else trending
-    const heroMovie = featuredMovies?.[0] || trendingMovies?.[0];
-    const heroImage = heroMovie?.image || heroMovie?.img || heroMovie?.poster;
-    let watchUrl = '#';
-    if (heroMovie) {
-        const urlToEncode = heroMovie.url || heroMovie.link || '';
-        watchUrl = `/watch?id=${Buffer.from(encodeURIComponent(urlToEncode)).toString('base64')}`;
-    }
+    const categoryResults = await fetchInChunksWithDelay(genreTasks, 3, 800);
+    const get = (index) => categoryResults[index]?.status === 'fulfilled' ? categoryResults[index].value || [] : [];
 
     const rows = [
         { title: '🔥 الأكثر مشاهدة', slug: 'movies', movies: trendingMovies },
         { title: '⭐ مسلسلات مميزة', slug: 'series', movies: topRatedSeries },
-        { title: '🎬 أفلام NETFLIX', slug: 'netflix-movies', movies: get(netflixMovies) },
-        { title: '🌍 أفلام أجنبية', slug: 'foreign-movies', movies: get(foreignMovies) },
-        { title: '🎭 أفلام أكشن', slug: 'action-movies', movies: get(actionMovies) },
-        { title: '👻 أفلام رعب', slug: 'horror-movies', movies: get(horrorMovies) },
-        { title: '🇮🇳 أفلام هندية', slug: 'hindi-movies', movies: get(hindiMovies) },
-        { title: '🌏 أفلام آسيوية', slug: 'asia-movies', movies: get(asiaMovies) },
-        { title: '🇹🇷 مسلسلات تركية', slug: 'turki', movies: get(turkiSeries) },
-        { title: '🇸🇦 مسلسلات عربية', slug: 'arabic', movies: get(arabicSeries) },
-        { title: '🌐 مسلسلات أجنبية', slug: 'Foreign-series', movies: get(foreignSeries) },
-        { title: '🌸 مسلسلات آسيوية', slug: 'asia-series', movies: get(asiaSeries) },
-        { title: '🇰🇷 مسلسلات كورية', slug: 'korean-series', movies: get(koreanSeries) },
-        { title: '🎌 أنمي وكرتون', slug: 'anmi', movies: get(anmi) },
+        { title: '🎬 أفلام NETFLIX', slug: 'netflix-movies', movies: get(0) },
+        { title: '🌍 أفلام أجنبية', slug: 'foreign-movies', movies: get(1) },
+        { title: '🎭 أفلام أكشن', slug: 'action-movies', movies: get(2) },
+        { title: '👻 أفلام رعب', slug: 'horror-movies', movies: get(3) },
+        { title: '🇮🇳 أفلام هندية', slug: 'hindi-movies', movies: get(4) },
+        { title: '🌏 أفلام آسيوية', slug: 'asia-movies', movies: get(5) },
+        { title: '🇹🇷 مسلسلات تركية', slug: 'turki', movies: get(6) },
+        { title: '🇸🇦 مسلسلات عربية', slug: 'arabic', movies: get(7) },
+        { title: '🌐 مسلسلات أجنبية', slug: 'Foreign-series', movies: get(8) },
+        { title: '🌸 مسلسلات آسيوية', slug: 'asia-series', movies: get(9) },
+        { title: '🇰🇷 مسلسلات كورية', slug: 'korean-series', movies: get(10) },
+        { title: '🎌 أنمي وكرتون', slug: 'anmi', movies: get(11) },
     ];
+
+    // Prepare Hero Movies
+    const heroMoviesSource = featuredMovies.length > 0 ? featuredMovies : trendingMovies;
+    const heroMovies = heroMoviesSource.slice(0, 7).map((movie) => {
+        const urlToEncode = movie.url || movie.link || '';
+        return {
+            title: movie.title,
+            story: movie.story,
+            watchUrl: `/watch?id=${Buffer.from(encodeURIComponent(urlToEncode)).toString('base64')}`,
+            heroImage: movie.image || movie.img || movie.poster || '',
+        };
+    });
 
     return (
         <main>
             <Navbar />
 
             {/* ─── Hero Section ───────────────────────────────────────────── */}
-            <section
-                className="hero-container"
-                style={{ backgroundImage: `url(${heroImage})` }}
-            >
-                <div className="hero-overlay" />
-                <div className="container-px hero-content">
-                    <div className="animate-fade">
-                        <span style={{
-                            color: '#e50914', fontSize: '0.75rem', letterSpacing: '3px',
-                            fontWeight: '700', textTransform: 'uppercase', display: 'block', marginBottom: '10px'
-                        }}>
-                            ✦ KIRA ORIGINAL
-                        </span>
-                        <h1 className="hero-title">{heroMovie?.title || 'Kira Movie'}</h1>
-                        <p className="hero-desc">
-                            {heroMovie?.story || 'شاهد أحدث الأفلام والمسلسلات بجودة عالية وبدون إعلانات.'}
-                        </p>
-                        <div style={{ display: 'flex', gap: '14px', flexWrap: 'wrap' }}>
-                            <Link href={watchUrl} className="btn btn-play">
-                                <Play fill="black" size={20} /> تشغيل
-                            </Link>
-                            <button className="btn btn-info">
-                                <Info size={20} /> مزيد من التفاصيل
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            </section>
+            {heroMovies.length > 0 && <HeroSlider movies={heroMovies} />}
 
             {/* ─── Main Content ────────────────────────────────────────────── */}
             <div className="container-px row-container">
@@ -141,7 +131,7 @@ export default async function Home() {
                                     FEATURED
                                 </span>
                             </h2>
-                            <Link href="/genre/movies" style={{
+                            <Link href="/discover?type=series&category=87&section=&title=مسلسلات%20رمضان" style={{
                                 color: '#e50914', fontSize: '0.82rem', fontWeight: '700',
                                 display: 'flex', alignItems: 'center', gap: '4px',
                                 border: '1px solid rgba(229,9,20,0.3)', padding: '4px 12px', borderRadius: '20px',

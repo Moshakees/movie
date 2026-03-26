@@ -43,6 +43,7 @@ export default function VideoPlayer({ src, title, poster, qualities = [], onQual
     const hideTimer = useRef(null);
     const lastTap = useRef(0);
     const draggingRef = useRef(false);  // non-state flag for mouse events
+    const playPromiseRef = useRef(null);
 
     // ── Re-load video when src changes ──────────────────────────────────────
     useEffect(() => {
@@ -118,10 +119,30 @@ export default function VideoPlayer({ src, title, poster, qualities = [], onQual
     function handlePlayPause() {
         const v = videoRef.current;
         if (!v || !src) return;
+        
         if (v.paused) {
-            v.play().catch(console.error);
+            const playPromise = v.play();
+            if (playPromise !== undefined) {
+                playPromiseRef.current = playPromise;
+                playPromise.catch(e => {
+                    if (e.name !== 'NotAllowedError' && e.name !== 'AbortError') {
+                        console.error(e);
+                    }
+                });
+            }
         } else {
-            v.pause();
+            if (playPromiseRef.current !== null) {
+                playPromiseRef.current
+                    .then(() => {
+                        v.pause();
+                    })
+                    .catch(() => {
+                        v.pause();
+                    });
+                playPromiseRef.current = null;
+            } else {
+                v.pause();
+            }
         }
     }
 
